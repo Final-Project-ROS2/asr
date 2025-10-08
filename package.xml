@@ -7,6 +7,14 @@
   <maintainer email="karamahati@gmail.com">final-project</maintainer>
   <license>Apache-2.0</license>
 
+  <exec_depend>rclpy</exec_depend>
+
+  <!-- Non-ROS Python deps -->
+  <exec_depend>python3-pyaudio</exec_depend>
+  <exec_depend>python3-websockets</exec_depend>
+  <!-- <exec_depend>python3-json</exec_depend>
+  <exec_depend>python3-asyncio</exec_depend> -->
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

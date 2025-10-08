@@ -7,6 +7,8 @@ venv/
 .venv/
 env/
 .env/
+.env
+asr/api.py
 build/
 dist/
 *.egg-info/

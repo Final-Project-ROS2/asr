@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'asr_service = asr.asr_service:main',
         ],
     },
 )
