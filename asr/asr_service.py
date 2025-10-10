@@ -1,19 +1,28 @@
+import asyncio
+import json
+import sys
+
+# Fix for Windows + Python 3.13
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import pyaudio
 import websockets
-import asyncio
-import base64
-import json
 from .api import API_KEY_ASSEMBLY
-from custom_interfaces.srv import GetTranscript
+
+from custom_interfaces.srv import GetTranscript  # Ensure this is the correct import path
 
 import rclpy
 from rclpy.node import Node
 
-
+# Audio config
 FRAMES_PER_BUFFER = 3200
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
+
+# AssemblyAI new streaming endpoint (v3)
+URL = "wss://streaming.assemblyai.com/v3/ws"
 
 
 class ASRService(Node):
@@ -21,25 +30,24 @@ class ASRService(Node):
     def __init__(self):
         super().__init__('asr_service')
         self.srv = self.create_service(GetTranscript, 'get_transcript', self.asr_callback)
-        self.get_logger().info('ASR Service initialized')
+        self.get_logger().info('ASR Service Initialized')
 
     def asr_callback(self, request, response):
-        """Service callback to perform ASR"""
-        self.get_logger().info('Incoming request: duration=%d seconds' % request.duration)
-        
+        self.get_logger().info("Incoming request: duration=%d seconds" % request.duration)
+
         try:
-            transcript = asyncio.run(self.run_asr(request.duration))
+            transcript = asyncio.run(self.run_asr())
             response.transcript = transcript
             response.success = True
         except Exception as e:
             self.get_logger().error(f'ASR Error: {str(e)}')
-            response.transcript = ""
+            response.transcript = ''
             response.success = False
-        
+
         return response
 
-    async def run_asr(self, duration_seconds):
-        """Run ASR for specified duration or until silence"""
+    async def run_asr(self):
+        """Run ASR and return list of transcripts"""
         p = pyaudio.PyAudio()
 
         device_index = None
@@ -62,93 +70,63 @@ class ASRService(Node):
             frames_per_buffer=FRAMES_PER_BUFFER
         )
 
-        URL = "wss://api.assemblyai.com/v2/realtime/ws?sample_rate=16000"
+        transcripts = []
+        stop_event = asyncio.Event()
 
         try:
             async with websockets.connect(
                 URL,
-                ping_timeout=20,
-                ping_interval=5,
-                extra_headers={"Authorization": API_KEY_ASSEMBLY}
-            ) as _ws:
-                await asyncio.sleep(0.1)
-                session_begins = await _ws.recv()
-                self.get_logger().info('ASR session started')
+                extra_headers={"Authorization": API_KEY_ASSEMBLY},
+            ) as ws:
 
-                transcripts = []
-                stop_event = asyncio.Event()
-                last_transcript_time = asyncio.get_event_loop().time()
-                silence_timeout = 3
-                start_time = asyncio.get_event_loop().time()
+                session_begins = await ws.recv()
+                self.get_logger().info(f'ASR session started: {session_begins}')
 
-                async def send():
+                async def send_audio():
                     while not stop_event.is_set():
                         try:
                             data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
-                            data = base64.b64encode(data).decode("utf-8")
-                            json_data = json.dumps({"audio_data": data})
-                            await _ws.send(json_data)
+                            await ws.send(data)
                         except websockets.exceptions.ConnectionClosedError as e:
-                            self.get_logger().error(f'Connection error: {e}')
+                            self.get_logger().error(f'Connection closed: {e}')
                             break
                         except Exception as e:
                             self.get_logger().error(f'Send error: {e}')
                             break
                         await asyncio.sleep(0.01)
 
-                async def receive():
-                    nonlocal last_transcript_time
+                async def receive_transcripts():
                     while not stop_event.is_set():
                         try:
-                            result_str = await _ws.recv()
+                            result_str = await ws.recv()
                             result = json.loads(result_str)
-                            prompt = result.get("text")
-                            if prompt and result.get("message_type") == "FinalTranscript":
-                                self.get_logger().info(f'Transcript: {prompt}')
-                                transcripts.append(prompt)
-                                last_transcript_time = asyncio.get_event_loop().time()
+                            
+                            if result.get("type") == "Turn":
+                                text = result.get("transcript", "")
+                                if text:
+                                    self.get_logger().info(f'Transcript: {text}')
+                                    transcripts.append(text)
+                                    
                         except websockets.exceptions.ConnectionClosedError as e:
-                            self.get_logger().error(f'Connection error: {e}')
+                            self.get_logger().error(f'Connection closed: {e}')
                             break
                         except Exception as e:
                             self.get_logger().error(f'Receive error: {e}')
                             break
 
-                async def check_stop_conditions():
-                    while not stop_event.is_set():
-                        current_time = asyncio.get_event_loop().time()
-                        
-                        # Check if duration exceeded
-                        if current_time - start_time > duration_seconds:
-                            self.get_logger().info('Duration limit reached')
-                            stop_event.set()
-                            break
-                        
-                        # Check if silence timeout
-                        if current_time - last_transcript_time > silence_timeout:
-                            self.get_logger().info('Silence detected')
-                            stop_event.set()
-                            break
-                        
-                        await asyncio.sleep(0.5)
-
                 try:
-                    send_task = asyncio.create_task(send())
-                    receive_task = asyncio.create_task(receive())
-                    stop_task = asyncio.create_task(check_stop_conditions())
-                    
-                    await asyncio.gather(send_task, receive_task, stop_task)
+                    await asyncio.gather(send_audio(), receive_transcripts())
                 except asyncio.CancelledError:
                     pass
-                finally:
-                    stop_event.set()
 
         finally:
+            stop_event.set()
             stream.stop_stream()
             stream.close()
             p.terminate()
+            self.get_logger().info('ASR stopped')
 
-        return " ".join(transcripts)
+        return transcripts
 
 
 def main():
