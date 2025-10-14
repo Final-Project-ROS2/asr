@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+import time
 
 # Fix for Windows + Python 3.13
 if sys.platform.startswith("win"):
@@ -20,6 +21,10 @@ FRAMES_PER_BUFFER = 3200
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
+
+# Silence detection config
+SILENCE_THRESHOLD = 500  # Adjust based on your environment (lower = more sensitive)
+SILENCE_DURATION = 3.0   # Seconds of silence before stopping
 
 # AssemblyAI new streaming endpoint (v3)
 URL = "wss://streaming.assemblyai.com/v3/ws"
@@ -45,6 +50,12 @@ class ASRService(Node):
             response.success = False
 
         return response
+
+    def is_silent(self, data):
+        """Check if audio data is below silence threshold"""
+        import numpy as np
+        audio_data = np.frombuffer(data, dtype=np.int16)
+        return np.abs(audio_data).mean() < SILENCE_THRESHOLD
 
     async def run_asr(self):
         """Run ASR and return list of transcripts"""
@@ -72,6 +83,7 @@ class ASRService(Node):
 
         transcripts = []
         stop_event = asyncio.Event()
+        last_audio_time = time.time()
 
         try:
             async with websockets.connect(
@@ -83,9 +95,21 @@ class ASRService(Node):
                 self.get_logger().info(f'ASR session started: {session_begins}')
 
                 async def send_audio():
+                    nonlocal last_audio_time
                     while not stop_event.is_set():
                         try:
                             data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
+                            
+                            # Check for silence
+                            if not self.is_silent(data):
+                                last_audio_time = time.time()
+                            
+                            # Check if silence duration exceeded
+                            if time.time() - last_audio_time > SILENCE_DURATION:
+                                self.get_logger().info(f'No audio input for {SILENCE_DURATION} seconds. Stopping...')
+                                stop_event.set()
+                                break
+                            
                             await ws.send(data)
                         except websockets.exceptions.ConnectionClosedError as e:
                             self.get_logger().error(f'Connection closed: {e}')
