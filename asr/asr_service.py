@@ -15,11 +15,19 @@ from custom_interfaces.srv import GetTranscript  # Ensure this is the correct im
 import rclpy
 from rclpy.node import Node
 
+import numpy as np
+import scipy.signal
+
 # Audio config
+# FRAMES_PER_BUFFER = 1024
+# FORMAT = pyaudio.paInt16
+# CHANNELS = 1
+# RATE = 16000
+
 FRAMES_PER_BUFFER = 3200
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-RATE = 16000
+RATE = 44100
 
 # AssemblyAI new streaming endpoint (v3)
 URL = "wss://streaming.assemblyai.com/v3/ws"
@@ -50,13 +58,16 @@ class ASRService(Node):
         """Run ASR and return list of transcripts"""
         p = pyaudio.PyAudio()
 
-        device_index = None
-        for i in range(p.get_device_count()):
-            info = p.get_device_info_by_index(i)
-            if info.get('maxInputChannels') > 0:
-                device_index = i
-                self.get_logger().info(f"Using input device {i}: {info.get('name')}")
-                break
+        # device_index = None
+        # for i in range(p.get_device_count()):
+        #     info = p.get_device_info_by_index(i)
+        #     if info.get('maxInputChannels') > 0:
+        #         device_index = i
+        #         self.get_logger().info(f"Using input device {i}: {info.get('name')}")
+        #         break
+        device_index = 10
+        info = p.get_device_info_by_index(device_index)
+        self.get_logger().info(f"Using input device {device_index}: {info.get('name')}")
 
         if device_index is None:
             raise OSError("No microphone input device found!")
@@ -76,7 +87,7 @@ class ASRService(Node):
         try:
             async with websockets.connect(
                 URL,
-                extra_headers={"Authorization": API_KEY_ASSEMBLY},
+                additional_headers={"Authorization": API_KEY_ASSEMBLY},
             ) as ws:
 
                 session_begins = await ws.recv()
@@ -86,7 +97,12 @@ class ASRService(Node):
                     while not stop_event.is_set():
                         try:
                             data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
-                            await ws.send(data)
+                            
+                            # Convert to numpy array for resampling
+                            audio_np = np.frombuffer(data, dtype=np.int16)
+                            resampled = scipy.signal.resample_poly(audio_np, 16000, RATE)
+                            await ws.send(resampled.astype(np.int16).tobytes())
+                            # await ws.send(data)
                         except websockets.exceptions.ConnectionClosedError as e:
                             self.get_logger().error(f'Connection closed: {e}')
                             break
