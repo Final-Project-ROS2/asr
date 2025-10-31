@@ -22,7 +22,8 @@ CHANNELS = 1
 RATE = 44100
 
 DEACTIVATION_KEYWORDS = ["execute", "go ahead"]
-EMERGENCY_KEYWORD = "stop"
+EMERGENCY_STOP_KEYWORD = "stop"
+EMERGENCY_START_KEYWORD = "okay"
 
 URL = "wss://streaming.assemblyai.com/v3/ws"
 
@@ -37,7 +38,8 @@ class ASRPublisher(Node):
 
         self.get_logger().info('✅ ASR Publisher Initialized with keyword detection')
         self.get_logger().info(f'Deactivation keywords: {DEACTIVATION_KEYWORDS}')
-        self.get_logger().info(f'Emergency keyword: {EMERGENCY_KEYWORD}')
+        self.get_logger().info(f'Emergency stop keyword: {EMERGENCY_STOP_KEYWORD}')
+        self.get_logger().info(f'Emergency start keyword: {EMERGENCY_START_KEYWORD}')
         self.get_logger().info('Mode: Continuous listening until deactivation or emergency keyword')
 
         self._asr_started = False
@@ -64,10 +66,17 @@ class ASRPublisher(Node):
     def check_for_keywords(self, text):
         text_lower = text.lower().strip()
 
-        if EMERGENCY_KEYWORD in text_lower:
+        # Check for emergency stop
+        if EMERGENCY_STOP_KEYWORD in text_lower:
             self.get_logger().warn(f'🚨 EMERGENCY STOP detected: "{text}"')
-            return ('emergency', None)
+            return ('emergency_stop', None)
+        
+        # Check for emergency start (resume)
+        if EMERGENCY_START_KEYWORD in text_lower:
+            self.get_logger().info(f'✅ EMERGENCY START detected: "{text}"')
+            return ('emergency_start', None)
 
+        # Check for deactivation keywords
         for keyword in DEACTIVATION_KEYWORDS:
             if keyword in text_lower:
                 cleaned_text = re.sub(
@@ -151,12 +160,21 @@ class ASRPublisher(Node):
 
                                         keyword_type, cleaned_text = self.check_for_keywords(text)
 
-                                        # Emergency keyword → publish Bool
-                                        if keyword_type == 'emergency':
+                                        # Emergency stop keyword → publish True
+                                        if keyword_type == 'emergency_stop':
                                             msg = Bool()
                                             msg.data = True
                                             self.emergency_publisher.publish(msg)
-                                            self.get_logger().warn('🚨 Published EMERGENCY STOP to /emergency')
+                                            self.get_logger().warn('🚨 Published EMERGENCY STOP (True) to /emergency')
+                                            stop_event.set()
+                                            break
+                                        
+                                        # Emergency start keyword → publish False
+                                        elif keyword_type == 'emergency_start':
+                                            msg = Bool()
+                                            msg.data = False
+                                            self.emergency_publisher.publish(msg)
+                                            self.get_logger().info('✅ Published EMERGENCY START (False) to /emergency')
                                             stop_event.set()
                                             break
 
