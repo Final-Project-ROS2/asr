@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'asr_service = asr.asr_service:main',
+            'asr_connector = asr.asr_connector:main',
         ],
     },
 )
