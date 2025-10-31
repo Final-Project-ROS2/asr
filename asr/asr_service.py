@@ -1,231 +1,206 @@
 import asyncio
 import json
 import sys
-import time
 import re
+import threading
+import pyaudio
+import websockets
+import numpy as np
+import scipy.signal
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String, Bool
+from .api import API_KEY_ASSEMBLY
 
 # Fix for Windows + Python 3.13
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-import pyaudio
-import websockets
-from .api import API_KEY_ASSEMBLY
-
-from custom_interfaces.srv import GetTranscript
-from std_msgs.msg import String, Bool
-
-import rclpy
-from rclpy.node import Node
-
-# Audio config
 FRAMES_PER_BUFFER = 3200
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-RATE = 16000
+RATE = 44100
 
-# Silence detection config
-SILENCE_THRESHOLD = 500
-# Removed SILENCE_DURATION - continuous listening mode
-
-# Keyword triggers
-DEACTIVATION_KEYWORDS = ["execute", "go ahead"]  # Changed to deactivation
+DEACTIVATION_KEYWORDS = ["execute", "go ahead"]
 EMERGENCY_KEYWORD = "stop"
 
-# AssemblyAI streaming endpoint (v3)
 URL = "wss://streaming.assemblyai.com/v3/ws"
 
 
-class ASRService(Node):
-
+class ASRPublisher(Node):
     def __init__(self):
-        super().__init__('asr_service')
-        self.srv = self.create_service(GetTranscript, 'get_transcript', self.asr_callback)
-        
+        super().__init__('asr_publisher')
+
         # Publishers
         self.prompt_publisher = self.create_publisher(String, '/prompt', 10)
         self.emergency_publisher = self.create_publisher(Bool, '/emergency', 10)
-        
-        self.get_logger().info('ASR Service Initialized with keyword detection')
+
+        self.get_logger().info('✅ ASR Publisher Initialized with keyword detection')
         self.get_logger().info(f'Deactivation keywords: {DEACTIVATION_KEYWORDS}')
         self.get_logger().info(f'Emergency keyword: {EMERGENCY_KEYWORD}')
-        self.get_logger().info('Mode: Continuous listening until deactivation keyword')
+        self.get_logger().info('Mode: Continuous listening until deactivation or emergency keyword')
 
-    def asr_callback(self, request, response):
-        self.get_logger().info("Incoming request: duration=%d seconds" % request.duration)
+        self._asr_started = False
+        self._asr_thread = None
+        
+        # Start ASR immediately in background thread
+        self.get_logger().info("🎙️ Starting ASR loop in background thread...")
+        self._asr_thread = threading.Thread(target=self._run_asyncio_asr, daemon=True)
+        self._asr_thread.start()
 
+    def _run_asyncio_asr(self):
+        """Runs the asyncio ASR loop in a dedicated thread"""
         try:
-            transcript = asyncio.run(self.run_asr())
-            response.transcript = transcript
-            response.success = True
+            self.get_logger().info("🔧 Setting up asyncio event loop in ASR thread...")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.get_logger().info("🚀 Running ASR coroutine...")
+            loop.run_until_complete(self.run_asr())
         except Exception as e:
-            self.get_logger().error(f'ASR Error: {str(e)}')
-            response.transcript = ''
-            response.success = False
-
-        return response
-
-    def is_silent(self, data):
-        """Check if audio data is below silence threshold"""
-        import numpy as np
-        audio_data = np.frombuffer(data, dtype=np.int16)
-        return np.abs(audio_data).mean() < SILENCE_THRESHOLD
+            self.get_logger().error(f"💥 ASR thread crashed: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
 
     def check_for_keywords(self, text):
-        """
-        Check if text contains deactivation or emergency keywords.
-        Returns: ('deactivation', cleaned_text) or ('emergency', None) or (None, None)
-        """
         text_lower = text.lower().strip()
-        
-        # Check for emergency keyword
+
         if EMERGENCY_KEYWORD in text_lower:
-            self.get_logger().warn(f'EMERGENCY STOP detected: "{text}"')
+            self.get_logger().warn(f'🚨 EMERGENCY STOP detected: "{text}"')
             return ('emergency', None)
-        
-        # Check for deactivation keywords
+
         for keyword in DEACTIVATION_KEYWORDS:
             if keyword in text_lower:
-                # Remove the deactivation keyword from the text
                 cleaned_text = re.sub(
-                    r'\b' + re.escape(keyword) + r'\b',
-                    '',
-                    text_lower,
-                    flags=re.IGNORECASE
+                    r'\b' + re.escape(keyword) + r'\b', '', text_lower, flags=re.IGNORECASE
                 ).strip()
-                
-                # Clean up extra spaces
                 cleaned_text = ' '.join(cleaned_text.split())
-                
-                self.get_logger().info(f'Deactivation keyword "{keyword}" detected')
-                self.get_logger().info(f'Cleaned prompt: "{cleaned_text}"')
+                self.get_logger().info(f'🗣️ Deactivation keyword "{keyword}" detected')
                 return ('deactivation', cleaned_text)
-        
+
         return (None, None)
 
     async def run_asr(self):
-        """Run ASR with keyword detection"""
+        """Continuously listen, stream audio, and publish when triggers occur"""
+        self.get_logger().info("🎤 ASR run_asr() function started!")
+        
         p = pyaudio.PyAudio()
 
-        device_index = None
-        for i in range(p.get_device_count()):
-            info = p.get_device_info_by_index(i)
-            if info.get('maxInputChannels') > 0:
-                device_index = i
-                self.get_logger().info(f"Using input device {i}: {info.get('name')}")
-                break
-
-        if device_index is None:
-            raise OSError("No microphone input device found!")
-
-        stream = p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
-            input=True,
-            input_device_index=device_index,
-            frames_per_buffer=FRAMES_PER_BUFFER
-        )
-
-        transcripts = []
-        latest_sentence = ""
-        stop_event = asyncio.Event()
+        device_index = 10  # TODO: Adjust if needed
+        
+        try:
+            info = p.get_device_info_by_index(device_index)
+            self.get_logger().info(f"🎧 Using input device {device_index}: {info.get('name')}")
+        except Exception as e:
+            self.get_logger().error(f"❌ Failed to get device info for index {device_index}: {e}")
+            self.get_logger().info("Available audio devices:")
+            for i in range(p.get_device_count()):
+                dev_info = p.get_device_info_by_index(i)
+                self.get_logger().info(f"  [{i}] {dev_info.get('name')} - Inputs: {dev_info.get('maxInputChannels')}")
+            p.terminate()
+            return
 
         try:
-            async with websockets.connect(
-                URL,
-                extra_headers={"Authorization": API_KEY_ASSEMBLY},
-            ) as ws:
+            stream = p.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=FRAMES_PER_BUFFER
+            )
+            self.get_logger().info("🎤 Audio stream opened successfully")
+        except Exception as e:
+            self.get_logger().error(f"❌ Failed to open audio stream: {e}")
+            p.terminate()
+            return
 
-                session_begins = await ws.recv()
-                self.get_logger().info(f'ASR session started: {session_begins}')
+        while rclpy.ok():
+            stop_event = asyncio.Event()
+            try:
+                self.get_logger().info(f"🔌 Connecting to AssemblyAI at {URL}...")
+                async with websockets.connect(
+                    URL,
+                    additional_headers={"Authorization": API_KEY_ASSEMBLY},
+                ) as ws:
+                    session_begins = await ws.recv()
+                    self.get_logger().info(f'🔗 ASR session started: {session_begins}')
 
-                async def send_audio():
-                    while not stop_event.is_set():
-                        try:
-                            data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
-                            await ws.send(data)
-                        except websockets.exceptions.ConnectionClosedError as e:
-                            self.get_logger().error(f'Connection closed: {e}')
-                            break
-                        except Exception as e:
-                            self.get_logger().error(f'Send error: {e}')
-                            break
-                        await asyncio.sleep(0.01)
+                    async def send_audio():
+                        while not stop_event.is_set():
+                            try:
+                                data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
+                                audio_np = np.frombuffer(data, dtype=np.int16)
+                                resampled = scipy.signal.resample_poly(audio_np, 16000, RATE)
+                                await ws.send(resampled.astype(np.int16).tobytes())
+                            except Exception as e:
+                                self.get_logger().error(f'🎧 Send error: {e}')
+                                stop_event.set()
+                                break
+                            await asyncio.sleep(0.01)
 
-                async def receive_transcripts():
-                    nonlocal latest_sentence
-                    while not stop_event.is_set():
-                        try:
-                            result_str = await ws.recv()
-                            result = json.loads(result_str)
-                            
-                            if result.get("type") == "Turn":
-                                text = result.get("transcript", "")
-                                if text:
-                                    self.get_logger().info(f'Transcript: {text}')
-                                    transcripts.append(text)
-                                    latest_sentence = text
-                                    
-                                    # Check for keywords
-                                    keyword_type, cleaned_text = self.check_for_keywords(text)
-                                    
-                                    if keyword_type == 'emergency':
-                                        # Publish emergency stop
-                                        emergency_msg = Bool()
-                                        emergency_msg.data = True
-                                        self.emergency_publisher.publish(emergency_msg)
-                                        self.get_logger().warn('Published EMERGENCY STOP to /emergency')
-                                        
-                                        # Stop the session immediately
-                                        stop_event.set()
-                                        break
-                                        
-                                    elif keyword_type == 'deactivation':
-                                        # Publish cleaned prompt to /prompt topic
-                                        if cleaned_text:  # Only publish if there's actual content
-                                            prompt_msg = String()
-                                            prompt_msg.data = cleaned_text
-                                            self.prompt_publisher.publish(prompt_msg)
-                                            self.get_logger().info(f'Published to /prompt: "{cleaned_text}"')
-                                            
-                                            # Stop listening after deactivation keyword
-                                            self.get_logger().info('Deactivation keyword detected - stopping ASR session')
+                    async def receive_transcripts():
+                        while not stop_event.is_set():
+                            try:
+                                result_str = await ws.recv()
+                                result = json.loads(result_str)
+
+                                if result.get("type") == "Turn":
+                                    text = result.get("transcript", "")
+                                    if text:
+                                        self.get_logger().info(f'📝 Transcript: {text}')
+
+                                        keyword_type, cleaned_text = self.check_for_keywords(text)
+
+                                        # Emergency keyword → publish Bool
+                                        if keyword_type == 'emergency':
+                                            msg = Bool()
+                                            msg.data = True
+                                            self.emergency_publisher.publish(msg)
+                                            self.get_logger().warn('🚨 Published EMERGENCY STOP to /emergency')
                                             stop_event.set()
                                             break
-                                        else:
-                                            self.get_logger().warn('Deactivation keyword detected but no command found')
-                                    
-                        except websockets.exceptions.ConnectionClosedError as e:
-                            self.get_logger().error(f'Connection closed: {e}')
-                            break
-                        except Exception as e:
-                            self.get_logger().error(f'Receive error: {e}')
-                            break
 
-                try:
+                                        # Deactivation keyword → publish cleaned command
+                                        elif keyword_type == 'deactivation':
+                                            if cleaned_text:
+                                                msg = String()
+                                                msg.data = cleaned_text
+                                                self.prompt_publisher.publish(msg)
+                                                self.get_logger().info(f'📤 Published to /prompt: "{cleaned_text}"')
+                                            else:
+                                                self.get_logger().warn('⚠️ Deactivation keyword detected but no command text found')
+                                            stop_event.set()
+                                            break
+
+                            except Exception as e:
+                                self.get_logger().error(f'💬 Receive error: {e}')
+                                stop_event.set()
+                                break
+
                     await asyncio.gather(send_audio(), receive_transcripts())
-                except asyncio.CancelledError:
-                    pass
 
-        finally:
-            stop_event.set()
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
-            self.get_logger().info('ASR stopped')
+            except Exception as e:
+                self.get_logger().error(f'❌ ASR session error: {e}')
+                import traceback
+                self.get_logger().error(traceback.format_exc())
+                await asyncio.sleep(2.0)
 
-        return transcripts
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        self.get_logger().info('🛑 ASR Publisher stopped.')
 
 
 def main():
     rclpy.init()
-
-    asr_service = ASRService()
-
-    rclpy.spin(asr_service)
-
-    rclpy.shutdown()
+    node = ASRPublisher()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info("👋 Keyboard interrupt, shutting down.")
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
