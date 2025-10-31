@@ -33,7 +33,7 @@ class ASRPublisher(Node):
         super().__init__('asr_publisher')
 
         # Publishers
-        self.prompt_publisher = self.create_publisher(String, '/prompt', 10)
+        self.prompt_publisher = self.create_publisher(String, '/high_level_prompt', 10)
         self.emergency_publisher = self.create_publisher(Bool, '/emergency', 10)
 
         self.get_logger().info('✅ ASR Publisher Initialized with keyword detection')
@@ -184,7 +184,7 @@ class ASRPublisher(Node):
                                                 msg = String()
                                                 msg.data = cleaned_text
                                                 self.prompt_publisher.publish(msg)
-                                                self.get_logger().info(f'📤 Published to /prompt: "{cleaned_text}"')
+                                                self.get_logger().info(f'📤 Published to /high_level_prompt: "{cleaned_text}"')
                                             else:
                                                 self.get_logger().warn('⚠️ Deactivation keyword detected but no command text found')
                                             stop_event.set()
