@@ -1,7 +1,6 @@
 import asyncio
 import json
 import sys
-import time
 import re
 
 # Fix for Windows + Python 3.13
@@ -160,10 +159,14 @@ class ASRService(Node):
                             result_str = await ws.recv()
                             result = json.loads(result_str)
                             
+                            # Log all received messages for debugging
+                            self.get_logger().info(f'Received message type: {result.get("type")}')
+                            
+                            # Check for both "Turn" and "PartialTranscript" types
                             if result.get("type") == "Turn":
                                 text = result.get("transcript", "")
                                 if text:
-                                    self.get_logger().info(f'Transcript: {text}')
+                                    self.get_logger().info(f'Turn Transcript: {text}')
                                     transcripts.append(text)
                                     latest_sentence = text
                                     
@@ -195,6 +198,12 @@ class ASRService(Node):
                                             break
                                         else:
                                             self.get_logger().warn('Deactivation keyword detected but no command found')
+                            
+                            # Also show partial transcripts for debugging
+                            elif result.get("type") == "PartialTranscript":
+                                text = result.get("text", "")
+                                if text:
+                                    self.get_logger().info(f'Partial: {text}')
                                     
                         except websockets.exceptions.ConnectionClosedError as e:
                             self.get_logger().error(f'Connection closed: {e}')
