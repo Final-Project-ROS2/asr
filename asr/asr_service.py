@@ -164,9 +164,14 @@ class ASRPublisher(Node):
                                         if keyword_type == 'emergency_stop':
                                             msg = Bool()
                                             msg.data = True
-                                            self.emergency_publisher.publish(msg)
-                                            self.get_logger().warn('🚨 Published EMERGENCY STOP (True) to /emergency')
+                                            for _ in range(10):
+                                                self.emergency_publisher.publish(msg)
+                                                self.get_logger().warn('🚨 Published EMERGENCY STOP (True) to /emergency')
+                                                await asyncio.sleep(0.01)  # tiny delay to let ROS2 process messages
                                             stop_event.set()
+                                            # self.emergency_publisher.publish(msg)
+                                            # self.get_logger().warn('🚨 Published EMERGENCY STOP (True) to /emergency')
+                                            # stop_event.set()
                                             break
                                         
                                         # Emergency start keyword → publish False
