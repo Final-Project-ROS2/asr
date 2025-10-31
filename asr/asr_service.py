@@ -4,8 +4,8 @@ import sys
 import time
 
 # Fix for Windows + Python 3.13
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# if sys.platform.startswith("win"):
+#     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import pyaudio
 import websockets
@@ -20,7 +20,7 @@ from rclpy.node import Node
 FRAMES_PER_BUFFER = 3200
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-RATE = 16000
+RATE = 44100
 
 # Silence detection config
 SILENCE_THRESHOLD = 500  # Adjust based on your environment (lower = more sensitive)
@@ -88,7 +88,7 @@ class ASRService(Node):
         try:
             async with websockets.connect(
                 URL,
-                extra_headers={"Authorization": API_KEY_ASSEMBLY},
+                additional_headers={"Authorization": API_KEY_ASSEMBLY},
             ) as ws:
 
                 session_begins = await ws.recv()
