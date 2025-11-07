@@ -91,22 +91,33 @@ class ASRPublisher(Node):
     async def run_asr(self):
         """Continuously listen, stream audio, and publish when triggers occur"""
         self.get_logger().info("🎤 ASR run_asr() function started!")
-        
-        p = pyaudio.PyAudio()
 
-        device_index = 10  # TODO: Adjust if needed
-        
-        try:
-            info = p.get_device_info_by_index(device_index)
-            self.get_logger().info(f"🎧 Using input device {device_index}: {info.get('name')}")
-        except Exception as e:
-            self.get_logger().error(f"❌ Failed to get device info for index {device_index}: {e}")
-            self.get_logger().info("Available audio devices:")
-            for i in range(p.get_device_count()):
-                dev_info = p.get_device_info_by_index(i)
-                self.get_logger().info(f"  [{i}] {dev_info.get('name')} - Inputs: {dev_info.get('maxInputChannels')}")
-            p.terminate()
-            return
+        p = pyaudio.PyAudio()
+        target_name = "ATR2500x-USB Microphone"
+        device_index = None
+
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            name = info.get('name')
+            if target_name.lower() in name.lower() and info.get('maxInputChannels') > 0:
+                device_index = i
+                print(f"🎧 Selected device [{i}]: {name}")
+                break
+
+        if device_index is None:
+            print("❌ Could not find matching device.")
+        else:
+            try:
+                info = p.get_device_info_by_index(device_index)
+                self.get_logger().info(f"🎧 Using input device {device_index}: {info.get('name')}")
+            except Exception as e:
+                self.get_logger().error(f"❌ Failed to get device info for index {device_index}: {e}")
+                self.get_logger().info("Available audio devices:")
+                for i in range(p.get_device_count()):
+                    dev_info = p.get_device_info_by_index(i)
+                    self.get_logger().info(f"  [{i}] {dev_info.get('name')} - Inputs: {dev_info.get('maxInputChannels')}")
+                p.terminate()
+                return
 
         try:
             stream = p.open(
