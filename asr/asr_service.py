@@ -13,8 +13,8 @@ from std_msgs.msg import String, Bool
 from .api import API_KEY_ASSEMBLY
 
 # Fix for Windows + Python 3.13
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# if sys.platform.startswith("win"):
+#     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 FRAMES_PER_BUFFER = 3200
 FORMAT = pyaudio.paInt16
