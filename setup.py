@@ -1,5 +1,8 @@
 from setuptools import find_packages, setup
 
+import os
+from glob import glob
+
 package_name = 'asr'
 
 setup(
@@ -10,6 +13,9 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # Include launch files
+        (os.path.join('share', package_name, 'launch'), 
+            glob('launch/*.launch.py') + glob('launch/*.sh')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,6 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'asr_service = asr.asr_service:main',
+            'asr_connector = asr.asr_connector:main',
         ],
     },
 )
