@@ -12,6 +12,8 @@ from rclpy.node import Node
 from std_msgs.msg import String, Bool
 from .api import API_KEY_ASSEMBLY
 
+from std_msgs.srv import Trigger
+
 # Fix for Windows + Python 3.13
 # if sys.platform.startswith("win"):
 #     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -24,6 +26,7 @@ RATE = 44100
 DEACTIVATION_KEYWORDS = ["execute", "go ahead"]
 EMERGENCY_STOP_KEYWORD = "stop"
 EMERGENCY_START_KEYWORD = "okay"
+CONFIRM_KEYWORD = "confirm"
 
 URL = "wss://streaming.assemblyai.com/v3/ws"
 
@@ -35,6 +38,9 @@ class ASRPublisher(Node):
         # Publishers
         self.prompt_publisher = self.create_publisher(String, '/high_level_prompt', 10)
         self.emergency_publisher = self.create_publisher(Bool, '/emergency', 10)
+
+        # Confirm service client
+        self.confirm_service_client = self.create_client(Trigger, '/confirm')
 
         self.get_logger().info('✅ ASR Publisher Initialized with keyword detection')
         self.get_logger().info(f'Deactivation keywords: {DEACTIVATION_KEYWORDS}')
@@ -85,6 +91,11 @@ class ASRPublisher(Node):
                 cleaned_text = ' '.join(cleaned_text.split())
                 self.get_logger().info(f'🗣️ Deactivation keyword "{keyword}" detected')
                 return ('deactivation', cleaned_text)
+
+        # Check for confirm keyword (confirm)
+        if CONFIRM_KEYWORD in text_lower:
+            self.get_logger().info(f'✅ CONFIRM keyword detected: "{text}"')
+            return ('confirm', None)
 
         return (None, None)
 
@@ -203,6 +214,21 @@ class ASRPublisher(Node):
                                                 self.get_logger().info(f'📤 Published to /high_level_prompt: "{cleaned_text}"')
                                             else:
                                                 self.get_logger().warn('⚠️ Deactivation keyword detected but no command text found')
+                                            stop_event.set()
+                                            break
+                                        
+                                        # Confirm keyword → call confirm service
+                                        elif keyword_type == 'confirm':
+                                            if self.confirm_service_client.wait_for_service(timeout_sec=5.0):
+                                                req = Trigger.Request()
+                                                future = self.confirm_service_client.call_async(req)
+                                                rclpy.spin_until_future_complete(self, future)
+                                                if future.result() is not None:
+                                                    self.get_logger().info('✅ Confirm service called successfully')
+                                                else:
+                                                    self.get_logger().error('❌ Confirm service call failed')
+                                            else:
+                                                self.get_logger().error('❌ Confirm service not available')
                                             stop_event.set()
                                             break
 
