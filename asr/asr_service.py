@@ -12,7 +12,7 @@ from rclpy.node import Node
 from std_msgs.msg import String, Bool
 from .api import API_KEY_ASSEMBLY
 
-from std_msgs.srv import Trigger
+from std_srvs.srv import Trigger
 
 # Fix for Windows + Python 3.13
 # if sys.platform.startswith("win"):
@@ -189,11 +189,8 @@ class ASRPublisher(Node):
                                             for _ in range(10):
                                                 self.emergency_publisher.publish(msg)
                                                 self.get_logger().warn('🚨 Published EMERGENCY STOP (True) to /emergency')
-                                                await asyncio.sleep(0.01)  # tiny delay to let ROS2 process messages
+                                                await asyncio.sleep(0.01)
                                             stop_event.set()
-                                            # self.emergency_publisher.publish(msg)
-                                            # self.get_logger().warn('🚨 Published EMERGENCY STOP (True) to /emergency')
-                                            # stop_event.set()
                                             break
                                         
                                         # Emergency start keyword → publish False
@@ -217,18 +214,48 @@ class ASRPublisher(Node):
                                             stop_event.set()
                                             break
                                         
-                                        # Confirm keyword → call confirm service
+                                        # Confirm keyword → call confirm service using threading
                                         elif keyword_type == 'confirm':
-                                            if self.confirm_service_client.wait_for_service(timeout_sec=5.0):
-                                                req = Trigger.Request()
-                                                future = self.confirm_service_client.call_async(req)
-                                                rclpy.spin_until_future_complete(self, future)
-                                                if future.result() is not None:
-                                                    self.get_logger().info('✅ Confirm service called successfully')
-                                                else:
-                                                    self.get_logger().error('❌ Confirm service call failed')
+                                            # Use threading.Event to wait for service call
+                                            result_event = threading.Event()
+                                            result_container = [None]
+                                            
+                                            def call_confirm_service():
+                                                try:
+                                                    if self.confirm_service_client.wait_for_service(timeout_sec=5.0):
+                                                        req = Trigger.Request()
+                                                        
+                                                        # Use callback instead of spin_until_future_complete
+                                                        def response_callback(future):
+                                                            try:
+                                                                result_container[0] = future.result()
+                                                                result_event.set()
+                                                            except Exception as e:
+                                                                self.get_logger().error(f'❌ Confirm callback error: {e}')
+                                                                result_event.set()
+                                                        
+                                                        future = self.confirm_service_client.call_async(req)
+                                                        future.add_done_callback(response_callback)
+                                                    else:
+                                                        self.get_logger().error('❌ Confirm service not available')
+                                                        result_event.set()
+                                                except Exception as e:
+                                                    self.get_logger().error(f'❌ Confirm service call error: {e}')
+                                                    result_event.set()
+                                            
+                                            # Call service in a separate thread
+                                            service_thread = threading.Thread(target=call_confirm_service, daemon=True)
+                                            service_thread.start()
+                                            
+                                            # Wait for result (convert to async wait)
+                                            while not result_event.is_set():
+                                                await asyncio.sleep(0.1)
+                                            
+                                            if result_container[0] is not None:
+                                                self.get_logger().info(f'✅ Confirm service response: {result_container[0].message}')
                                             else:
-                                                self.get_logger().error('❌ Confirm service not available')
+                                                self.get_logger().error('❌ Confirm service call failed')
+                                            
                                             stop_event.set()
                                             break
 
