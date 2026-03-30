@@ -1,4 +1,5 @@
 import asyncio
+import os
 import json
 import sys
 import re
@@ -10,7 +11,14 @@ import scipy.signal
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Bool
-from .api import API_KEY_ASSEMBLY
+
+# dotenv
+from dotenv import load_dotenv
+
+ENV_PATH = '/home/group11/final_project_ws/src/asr/.env'
+load_dotenv(dotenv_path=ENV_PATH)
+
+API_KEY_ASSEMBLY = os.getenv("API_KEY_ASSEMBLY")
 
 from std_srvs.srv import Trigger
 
