@@ -4,6 +4,7 @@ import json
 import sys
 import re
 import threading
+from urllib.parse import urlencode
 import pyaudio
 import websockets
 import numpy as np
@@ -18,7 +19,30 @@ from dotenv import load_dotenv
 ENV_PATH = '/home/group11/final_project_ws/src/asr/.env'
 load_dotenv(dotenv_path=ENV_PATH)
 
-API_KEY_ASSEMBLY = os.getenv("API_KEY_ASSEMBLY")
+def _sanitize_env_value(value):
+    if value is None:
+        return ""
+    return value.strip().strip('"').strip("'")
+
+
+def _resolve_assembly_api_key():
+    # Preferred variable names.
+    for key_name in ("API_KEY_ASSEMBLY", "ASSEMBLYAI_API_KEY"):
+        value = _sanitize_env_value(os.getenv(key_name))
+        if value:
+            return value, key_name
+
+    # Fallback: tolerate accidental suffixes, e.g. API_KEY_ASSEMBLYfd.
+    for key_name, raw_value in os.environ.items():
+        if key_name.startswith("API_KEY_ASSEMBLY") or key_name.startswith("ASSEMBLYAI_API_KEY"):
+            value = _sanitize_env_value(raw_value)
+            if value:
+                return value, key_name
+
+    return "", None
+
+
+API_KEY_ASSEMBLY, API_KEY_SOURCE = _resolve_assembly_api_key()
 
 from std_srvs.srv import Trigger
 
@@ -36,7 +60,11 @@ EMERGENCY_STOP_KEYWORD = "stop"
 EMERGENCY_START_KEYWORD = "okay"
 CONFIRM_KEYWORD = "confirm"
 
-URL = "wss://streaming.assemblyai.com/v3/ws"
+STREAMING_PARAMS = {
+    "speech_model": "u3-rt-pro",
+    "sample_rate": 16000,
+}
+URL = f"wss://streaming.assemblyai.com/v3/ws?{urlencode(STREAMING_PARAMS)}"
 
 
 class ASRPublisher(Node):
@@ -55,6 +83,10 @@ class ASRPublisher(Node):
         self.get_logger().info(f'Emergency stop keyword: {EMERGENCY_STOP_KEYWORD}')
         self.get_logger().info(f'Emergency start keyword: {EMERGENCY_START_KEYWORD}')
         self.get_logger().info('Mode: Continuous listening until deactivation or emergency keyword')
+        if API_KEY_ASSEMBLY:
+            self.get_logger().info(f'AssemblyAI API key loaded from env var: {API_KEY_SOURCE}')
+        else:
+            self.get_logger().error('AssemblyAI API key missing. Set API_KEY_ASSEMBLY or ASSEMBLYAI_API_KEY in .env')
 
         self._asr_started = False
         self._asr_thread = None
@@ -156,6 +188,11 @@ class ASRPublisher(Node):
         while rclpy.ok():
             stop_event = asyncio.Event()
             try:
+                if not API_KEY_ASSEMBLY:
+                    self.get_logger().error('Cannot connect to AssemblyAI: API key is empty or not loaded')
+                    await asyncio.sleep(2.0)
+                    continue
+
                 self.get_logger().info(f"🔌 Connecting to AssemblyAI at {URL}...")
                 async with websockets.connect(
                     URL,
