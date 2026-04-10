@@ -77,6 +77,11 @@ class ASRPublisher(Node):
 
         # Confirm service client
         self.confirm_service_client = self.create_client(Trigger, '/confirm')
+        self.voice_enabled_subscriber = self.create_subscription(
+            Bool, '/voice_command_enabled', self._on_voice_command_enabled, 10
+        )
+        self._voice_commands_enabled = True
+        self._voice_disabled_logged = False
 
         self.get_logger().info('✅ ASR Publisher Initialized with keyword detection')
         self.get_logger().info(f'Deactivation keywords: {DEACTIVATION_KEYWORDS}')
@@ -95,6 +100,13 @@ class ASRPublisher(Node):
         self.get_logger().info("🎙️ Starting ASR loop in background thread...")
         self._asr_thread = threading.Thread(target=self._run_asyncio_asr, daemon=True)
         self._asr_thread.start()
+
+    def _on_voice_command_enabled(self, msg: Bool):
+        self._voice_commands_enabled = msg.data
+        state = 'ENABLED' if msg.data else 'DISABLED'
+        self.get_logger().info(f'🎙️ Voice command state changed: {state}')
+        if msg.data:
+            self._voice_disabled_logged = False
 
     def _run_asyncio_asr(self):
         """Runs the asyncio ASR loop in a dedicated thread"""
@@ -200,10 +212,15 @@ class ASRPublisher(Node):
                 ) as ws:
                     session_begins = await ws.recv()
                     self.get_logger().info(f'🔗 ASR session started: {session_begins}')
+                    silence_frame = np.zeros(int(FRAMES_PER_BUFFER * 16000 / RATE), dtype=np.int16).tobytes()
 
                     async def send_audio():
                         while not stop_event.is_set():
                             try:
+                                if not self._voice_commands_enabled:
+                                    await ws.send(silence_frame)
+                                    await asyncio.sleep(0.05)
+                                    continue
                                 data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
                                 audio_np = np.frombuffer(data, dtype=np.int16)
                                 resampled = scipy.signal.resample_poly(audio_np, 16000, RATE)
@@ -223,6 +240,12 @@ class ASRPublisher(Node):
                                 if result.get("type") == "Turn":
                                     text = result.get("transcript", "")
                                     if text:
+                                        if not self._voice_commands_enabled:
+                                            if not self._voice_disabled_logged:
+                                                self.get_logger().info('🔇 Voice command disabled, ignoring transcripts')
+                                                self._voice_disabled_logged = True
+                                            continue
+                                        self._voice_disabled_logged = False
                                         self.get_logger().info(f'📝 Transcript: {text}')
 
                                         keyword_type, cleaned_text = self.check_for_keywords(text)
