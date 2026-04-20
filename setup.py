@@ -17,7 +17,12 @@ setup(
         (os.path.join('share', package_name, 'launch'), 
             glob('launch/*.launch.py') + glob('launch/*.sh')),
     ],
-    install_requires=['setuptools'],
+    install_requires=[
+    'setuptools',
+    'coqui-tts[codec]',
+    'transformers==5.0.0',
+    'sounddevice',
+],
     zip_safe=True,
     maintainer='final-project',
     maintainer_email='karamahati@gmail.com',
